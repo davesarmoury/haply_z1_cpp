@@ -1,73 +1,133 @@
-/* -*- mode: c++ -*-
- * Copyright 2022 Haply Robotics Inc. All rights reserved.
- *
- * Simple haptic feedback loop using an arbitrary wall (floor) in the device's
- * workspace.
- */
-
 #include <chrono>
 #include <cstdio>
+#include <cmath>
+#include "Haply_HardwareAPI/HardwareAPI.h"
+#include "unitree_arm_sdk/control/unitreeArm.h"
 
-// The primary include file for the Haply C++ API.
-#include "HardwareAPI.h"
-
-// Used to reduce verbosity within the examples.
 namespace API = Haply::HardwareAPI;
 using namespace std::chrono_literals;
 
-// Arbitrary coordinate of the wall (floor) on the Z axis roughly located in the
-// center of the device's workspace.
-constexpr float wall = 0.17f;
+double GRIPPER_OPEN = -1.0;
+double GRIPPER_CLOSED = 0.0;
+bool hasGripper = true;
+bool linearize = false;
 
-// Constant used determine the strength of the device's haptic response as the
-// user pushes against the wall. The higher the value the harder it will be to
-// push through the wall.
-constexpr float stiffness = 2500;
+bool linear_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double linear_vel){
+    Vec6 current_pos = arm->lowstate->endPosture;
+    double dt = arm->_ctrlComp->dt;
+    Vec6 full_new = ideal_goal - current_pos;
+
+    float full_length = full_new.norm();
+    float max_length = linear_vel * dt;
+
+    bool success;
+    HomoMat goal_mat;
+    if(full_length <= max_length){
+        goal_mat = UNITREE_ARM::postureToHomo(ideal_goal);
+    }
+    else{
+        Vec6 new_goal = current_pos + full_new * max_length;
+        goal_mat = UNITREE_ARM::postureToHomo(new_goal);
+    }
+
+    Vec6 q_goal;
+
+    if ( arm->_ctrlComp->armModel->inverseKinematics(goal_mat, Vec6::Zero(), q_goal, true) ){
+        arm->q = q_goal;
+    
+        arm->setArmCmd(arm->q, arm->qd, arm->tau);
+        return true;
+    }
+    else{
+        std::cout << "IK FAIL\n";
+        return false;
+    }
+}
+
+bool joint_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double joint_vel){
+    Vec6 ideal_pos;
+
+    if ( arm->_ctrlComp->armModel->inverseKinematics(UNITREE_ARM::postureToHomo(ideal_goal), Vec6::Zero(), ideal_pos, true) ){
+        Vec6 current_pos = arm->_ctrlComp->lowcmd->getQ();
+        Vec6 delta_pos = ideal_pos - current_pos;
+        double delta_len = delta_pos.norm();
+        delta_pos = delta_pos / delta_len;
+        double dt = arm->_ctrlComp->dt;
+
+        if(delta_len <= dt * joint_vel){
+            arm->q = ideal_pos;
+        }
+        else{
+            Vec6 new_pos = current_pos + delta_pos * dt * joint_vel;
+            arm->q = new_pos;
+        }
+    
+        arm->setArmCmd(arm->q, arm->qd, arm->tau);
+        return true;
+    }
+    else{
+        std::cout << "IK FAIL\n";
+        return false;
+    }
+}
 
 int main(int argc, const char *argv[]) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: 03-hello-wall [com-port]\n");
+        std::fprintf(stderr, "usage: haply_z1_cpp [com-port]\n");
         return 1;
     }
 
-    // Basic device setup. See earlier examples for a more detailed explanation.
+    UNITREE_ARM::unitreeArm arm(hasGripper);
+    arm.sendRecvThread->start();
+    arm.backToStart();
+    arm.setFsm(UNITREE_ARM::ArmFSMState::PASSIVE);
+    arm.setFsm(UNITREE_ARM::ArmFSMState::LOWCMD);
+
+    std::vector<double> KP, KD;
+    KP = arm._ctrlComp->lowcmd->kp;
+    KD = arm._ctrlComp->lowcmd->kd;
+    arm.sendRecvThread->shutdown();
+
+    UNITREE_ARM::Posture goal_posture;
+    goal_posture.rx = 0.0;
+    goal_posture.ry = 0.0;
+    goal_posture.rz = 0.0;
+
     API::IO::SerialStream stream{argv[1]};
     API::Devices::Inverse3 device{&stream};
     (void)device.DeviceWakeup();
 
-    // Haptic loops feel best when operating at or above 1000Hz. Given that
-    // Windows doesn't provide any sleep facilities that can reliably operate at
-    // these frequencies, we instead use busy loops which are timed using
-    // high-resolution clocks (~100ns on Windows). For this example, we'll
-    // target an update rate of 5 kHz which means a delta of 200 micro-seconds
-    // in between each state update.
     typedef std::chrono::high_resolution_clock clock;
     auto next = clock::now();
-    auto delay = 200us; // 5kHz
+    auto delay = 1000us; // 1kHz
+
+    arm._ctrlComp->dt = 0.001;
 
     API::Devices::Inverse3::EndEffectorStateResponse state;
 
     while (true) {
+        next += delay;
 
         API::Devices::Inverse3::EndEffectorForceRequest request;
 
-        // If our end-effector position is positioned below our wall (floor)
-        // we'll apply an upward force that is proportional to how deep into the
-        // wall the end-effector currently is. Using proportional forces gives a
-        // smoother haptic experience.
-        if (state.position[2] < wall)
-            request.force[2] = (wall - state.position[2]) * stiffness;
-
-        // Send the current force value to the device and retrieve the current
-        // position of the end-effector for our next loop iteration.
         state = device.EndEffectorForce(request);
 
-        // Implementation of our busy-loop to regulate the frequency of our
-        // state updates.
-        next += delay;
+        goal_posture.x = state.position[1] + 0.6;
+        goal_posture.y = -state.position[0] - 0.1;
+        goal_posture.z = state.position[2] + 0.2;
+
+        joint_step(UNITREE_ARM::PosturetoVec6(goal_posture), &arm, 2.0);
+
+        arm.sendRecv();
+
         while (next > clock::now())
             ;
     }
 
+    arm.sendRecvThread->start();
+    arm.setFsm(UNITREE_ARM::ArmFSMState::JOINTCTRL);
+    arm.backToStart();
+    arm.setFsm(UNITREE_ARM::ArmFSMState::PASSIVE);
+    arm.sendRecvThread->shutdown();
     return 0;
 }
