@@ -1,0 +1,2 @@
+SUBSYSTEMS=="usb", KERNEL=="ttyACM[0-9]*", ACTION=="add", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0483", MODE="777", SYMLINK+="haply/inverse3_%s{serial}", GROUP="dialout"
+SUBSYSTEMS=="usb", KERNEL=="ttyACM[0-9]*", ACTION=="add", ATTRS{idVendor}=="2fe3", ATTRS{idProduct}=="0100", MODE="777", SYMLINK+="haply/handle_%s{serial}", GROUP="dialout"

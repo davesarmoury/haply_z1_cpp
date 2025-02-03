@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cmath>
+#include <cassert>
 #include "Haply_HardwareAPI/HardwareAPI.h"
 #include "unitree_arm_sdk/control/unitreeArm.h"
 
@@ -50,6 +51,8 @@ bool joint_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double joint_vel)
     if ( arm->_ctrlComp->armModel->inverseKinematics(UNITREE_ARM::postureToHomo(ideal_goal), Vec6::Zero(), ideal_pos, true) ){
         Vec6 current_pos = arm->_ctrlComp->lowcmd->getQ();
         Vec6 delta_pos = ideal_pos - current_pos;
+        
+        // Should be switched to max instead of norm
         double delta_len = delta_pos.norm();
         delta_pos = delta_pos / delta_len;
         double dt = arm->_ctrlComp->dt;
@@ -72,8 +75,8 @@ bool joint_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double joint_vel)
 }
 
 int main(int argc, const char *argv[]) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: haply_z1_cpp [com-port]\n");
+    if (argc < 3) {
+        std::fprintf(stderr, "usage: haply_z1_cpp [inverse-port] [handle-port]\n");
         return 1;
     }
 
@@ -93,9 +96,12 @@ int main(int argc, const char *argv[]) {
     goal_posture.ry = 0.0;
     goal_posture.rz = 0.0;
 
-    API::IO::SerialStream stream{argv[1]};
-    API::Devices::Inverse3 device{&stream};
-    (void)device.DeviceWakeup();
+    API::IO::SerialStream inv_stream{argv[1]};
+    API::Devices::Inverse3 inv_device{&inv_stream};
+    (void)inv_device.DeviceWakeup();
+
+    Haply::HardwareAPI::IO::SerialStream serial_stream(argv[2]);
+    Haply::HardwareAPI::Devices::Handle handle(&serial_stream);
 
     typedef std::chrono::high_resolution_clock clock;
     auto next = clock::now();
@@ -104,19 +110,51 @@ int main(int argc, const char *argv[]) {
     arm._ctrlComp->dt = 0.001;
 
     API::Devices::Inverse3::EndEffectorStateResponse state;
+    Haply::HardwareAPI::Devices::Handle::VersegripStatusResponse data;
 
+    Quat quat_tip;
+    double gripper_pos = GRIPPER_CLOSED;
+    bool gripper_reset = false;
+    
     while (true) {
         next += delay;
 
         API::Devices::Inverse3::EndEffectorForceRequest request;
+        state = inv_device.EndEffectorForce(request);
 
-        state = device.EndEffectorForce(request);
+        data = handle.GetVersegripStatus();
 
-        goal_posture.x = state.position[1] + 0.6;
-        goal_posture.y = -state.position[0] - 0.1;
-        goal_posture.z = state.position[2] + 0.2;
+        if(data.buttons == 1){
+            quat_tip[0] = data.quaternion[0];
+            quat_tip[1] = data.quaternion[1];
+            quat_tip[2] = data.quaternion[2];
+            quat_tip[3] = data.quaternion[3];
 
-        joint_step(UNITREE_ARM::PosturetoVec6(goal_posture), &arm, 2.0);
+            Vec3 rpy = robo::rotMatToRPY(robo::quatToRotMat(quat_tip));
+
+            goal_posture.x = state.position[1] + 0.6;
+            goal_posture.y = -state.position[0] + 0.0;
+            goal_posture.z = state.position[2] + 0.2;
+
+            goal_posture.rx = -rpy[1];
+            goal_posture.ry = rpy[0];
+            goal_posture.rz = rpy[2];
+
+            joint_step(UNITREE_ARM::PosturetoVec6(goal_posture), &arm, 3.0);
+        }
+        if(data.buttons == 2){
+            if(gripper_reset){
+                gripper_reset = false;
+                arm.setGripperCmd(gripper_pos, 0.0);
+                if(gripper_pos == GRIPPER_OPEN){
+                    gripper_pos = GRIPPER_CLOSED;
+                }
+                else{
+                    gripper_pos = GRIPPER_OPEN;
+                }
+            }
+        }
+        else{gripper_reset = true;}
 
         arm.sendRecv();
 
