@@ -35,7 +35,7 @@ bool linear_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double linear_ve
 
     if ( arm->_ctrlComp->armModel->inverseKinematics(goal_mat, Vec6::Zero(), q_goal, true) ){
         arm->q = q_goal;
-    
+
         arm->setArmCmd(arm->q, arm->qd, arm->tau);
         return true;
     }
@@ -51,7 +51,7 @@ bool joint_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double joint_vel)
     if ( arm->_ctrlComp->armModel->inverseKinematics(UNITREE_ARM::postureToHomo(ideal_goal), Vec6::Zero(), ideal_pos, true) ){
         Vec6 current_pos = arm->_ctrlComp->lowcmd->getQ();
         Vec6 delta_pos = ideal_pos - current_pos;
-        
+
         // Should be switched to max instead of norm
         double delta_len = delta_pos.norm();
         delta_pos = delta_pos / delta_len;
@@ -64,7 +64,7 @@ bool joint_step(Vec6 ideal_goal, UNITREE_ARM::unitreeArm* arm, double joint_vel)
             Vec6 new_pos = current_pos + delta_pos * dt * joint_vel;
             arm->q = new_pos;
         }
-    
+
         arm->setArmCmd(arm->q, arm->qd, arm->tau);
         return true;
     }
@@ -115,7 +115,7 @@ int main(int argc, const char *argv[]) {
     Quat quat_tip;
     double gripper_pos = GRIPPER_CLOSED;
     bool gripper_reset = false;
-    
+
     while (true) {
         next += delay;
 
@@ -125,33 +125,39 @@ int main(int argc, const char *argv[]) {
         data = handle.GetVersegripStatus();
 
         if(data.buttons == 1){
-            quat_tip[0] = data.quaternion[0];
-            quat_tip[1] = data.quaternion[1];
-            quat_tip[2] = data.quaternion[2];
-            quat_tip[3] = data.quaternion[3];
-
-            Vec3 rpy = robo::rotMatToRPY(robo::quatToRotMat(quat_tip));
-
-            goal_posture.x = state.position[1] + 0.6;
-            goal_posture.y = -state.position[0] + 0.0;
-            goal_posture.z = state.position[2] + 0.2;
-
-            goal_posture.rx = -rpy[1];
-            goal_posture.ry = rpy[0];
-            goal_posture.rz = rpy[2];
-
-            joint_step(UNITREE_ARM::PosturetoVec6(goal_posture), &arm, 3.0);
+            break;
         }
+
+        quat_tip[0] = data.quaternion[0];
+        quat_tip[1] = data.quaternion[1];
+        quat_tip[2] = data.quaternion[2];
+        quat_tip[3] = data.quaternion[3];
+
+        Vec3 rpy = robo::rotMatToRPY(robo::quatToRotMat(quat_tip));
+
+        goal_posture.x = state.position[1] + 0.6;
+        goal_posture.y = -state.position[0] + 0.0;
+        goal_posture.z = state.position[2] + 0.2;
+
+        goal_posture.rx = -rpy[1];
+        goal_posture.ry = rpy[0];
+        goal_posture.rz = rpy[2];
+
+        joint_step(UNITREE_ARM::PosturetoVec6(goal_posture), &arm, 5.0);
+
         if(data.buttons == 2){
             if(gripper_reset){
                 gripper_reset = false;
-                arm.setGripperCmd(gripper_pos, 0.0);
+
                 if(gripper_pos == GRIPPER_OPEN){
                     gripper_pos = GRIPPER_CLOSED;
                 }
                 else{
                     gripper_pos = GRIPPER_OPEN;
                 }
+
+                arm.setGripperCmd(gripper_pos, 0.0);
+
             }
         }
         else{gripper_reset = true;}
